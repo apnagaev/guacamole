@@ -1,0 +1,50 @@
+# Сгенерировано Ansible из files/guacamole/guacamole.yaml.j2. Не редактируйте на сервере.
+# Секреты и настройки входа — в guacamole.env рядом (0600).
+
+name: guacamole
+
+x-logging: &logging
+  driver: local                    # журналы контейнеров с ротацией
+  options:
+    max-size: "20m"
+    max-file: "5"
+
+services:
+  guacd:
+    image: guacamole/guacd:{{ guacamole_version }}
+    container_name: guacd
+    restart: unless-stopped
+    dns: [{{ dns_server }}]
+    environment:
+      TZ: "{{ guacamole_tz }}"
+      LOG_LEVEL: "{{ guacamole_log_level }}"
+    security_opt:
+      - no-new-privileges:true
+    networks: [guacamole]
+    logging: *logging
+    volumes:
+      - {{ guacamole_recordings_dir }}:/home/guacd/recordings      # записи сеансов
+      - {{ guacamole_shared_dir }}:/home/guacd/shared              # «диск» RDP-подключений
+
+  guacamole:
+    image: guacamole/guacamole:{{ guacamole_version }}
+    container_name: guacamole
+    restart: unless-stopped
+    depends_on: [guacd]
+    dns: [{{ dns_server }}]
+    env_file: [guacamole.env]
+    security_opt:
+      - no-new-privileges:true
+    networks: [guacamole]
+    logging: *logging
+    ports:
+      - {{ guacamole_port }}:8080   # для reverse proxy; firewall пускает только прокси и внутреннюю сеть
+    volumes:
+      - {{ guacamole_recordings_dir }}:/home/guacd/recordings:ro   # просмотр записей в интерфейсе
+
+networks:
+  guacamole:
+    ipam:
+      driver: default
+      config:
+        - subnet: {{ guacamole_subnet }}

@@ -1,0 +1,17 @@
+# Ждём, пока веб-приложение развернётся в Tomcat и ответит страницей входа
+- name: Guacamole web
+  uri:
+    url: "http://127.0.0.1:{{ guacamole_port }}/{{ guacamole_context }}/"
+    status_code: 200
+  register: web
+  until: web.status == 200
+  retries: 40
+  delay: 3
+
+- name: guacd is running
+  command: docker inspect -f '{{ '{{' }}.State.Running{{ '}}' }}' guacd
+  register: guacd_state
+  until: guacd_state.stdout == 'true'
+  retries: 10
+  delay: 3
+  changed_when: false
