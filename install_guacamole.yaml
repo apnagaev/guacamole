@@ -1,0 +1,140 @@
+# Apache Guacamole на двух узлах: доступ к удалённым рабочим столам (RDP, VNC, SSH) через браузер, вход через Keycloak.
+# Узлы обновляются строго по очереди: узел 1 → проверка → узел 2 → проверка.
+# Запуск: ansible-playbook -i inventory.yml install_guacamole.yaml [--ask-vault-pass]
+
+# Факты (IP) со всех узлов до основного прохода: при serial: 1 Ansible собирает их только с текущего узла,
+# а в правилах firewall нужны адреса обоих (cluster_nodes).
+- name: Gather facts from all nodes
+  hosts: docker
+  gather_facts: yes
+  tasks: []
+
+- name: Guacamole
+  hosts: docker
+  become: yes
+  serial: 1                                   # по одному узлу: сломанный релиз не уронит оба
+  order: sorted
+  vars_files:
+    - vars/guacamole.yml                      # пример: vars/guacamole.example.yml
+  vars:
+    service: guacamole
+    dir_compose: "/docker-compose/{{ service }}"
+    cluster_nodes: "{{ groups['docker'] | map('extract', hostvars, ['ansible_facts', 'default_ipv4', 'address']) | list }}"
+  tasks:
+
+  # ------------------------------------------------------------------ firewall
+  - name: Firewall
+    when: firewall
+    block:
+      - name: Install nftables
+        apt:
+          name: nftables
+          state: present
+
+      - name: Enable nftables at boot (without restart!)
+        systemd:
+          name: nftables
+          enabled: yes
+
+      - name: Include /etc/nftables.d at boot
+        lineinfile:
+          path: /etc/nftables.conf
+          line: 'include "/etc/nftables.d/*.nft"'
+          create: yes
+
+      - name: Create /etc/nftables.d
+        file:
+          path: /etc/nftables.d
+          state: directory
+
+      - name: Render firewall rules
+        template:
+          src: "files/{{ service }}/{{ service }}.nft.j2"
+          dest: "/etc/nftables.d/{{ service }}.nft"
+          validate: "nft -c -f %s"
+        register: nft_rules
+
+      - name: Apply firewall rules
+        command: "nft -f /etc/nftables.d/{{ service }}.nft"
+        when: nft_rules.changed
+
+  # ------------------------------------------------------------------ файлы
+  - name: Compose directory
+    file:
+      path: "{{ dir_compose }}"
+      state: directory
+
+  # Папка «диска» в RDP-подключениях (путь /home/guacd/shared в настройках подключения).
+  # Раньше создавалась внутри контейнера и пропадала при каждом пересоздании; теперь — каталог хоста.
+  - name: Shared drive directory (guacd, uid 1000)
+    file:
+      path: "{{ guacamole_shared_dir }}"
+      state: directory
+      owner: 1000
+      group: 1000
+      mode: '0750'
+
+  # Записи сеансов: каталог только создаётся при отсутствии, права существующего (общее хранилище) не меняются
+  - name: Recordings directory exists
+    stat:
+      path: "{{ guacamole_recordings_dir }}"
+    register: rec_dir
+
+  - name: Create recordings directory
+    file:
+      path: "{{ guacamole_recordings_dir }}"
+      state: directory
+      owner: 1000
+      group: 1000
+      mode: '2775'
+    when: not rec_dir.stat.exists
+
+  - name: docker-compose.yaml
+    template:
+      src: "files/{{ service }}/{{ service }}.yaml.j2"
+      dest: "{{ dir_compose }}/docker-compose.yaml"
+      mode: '0644'
+
+  # пароль базы и настройки Keycloak — только владельцу
+  - name: guacamole.env
+    template:
+      src: "files/{{ service }}/{{ service }}.env.j2"
+      dest: "{{ dir_compose }}/{{ service }}.env"
+      mode: '0600'
+
+  # прежняя версия плейбука копировала server.xml, который не подключался: RemoteIpValve включён переменной
+  - name: Remove unused server.xml
+    file:
+      path: "{{ dir_compose }}/server.xml"
+      state: absent
+
+  # ------------------------------------------------------------------ образы и запуск
+  - name: Pull images
+    command: docker compose pull --quiet
+    args:
+      chdir: "{{ dir_compose }}"
+    register: pull
+    retries: 3
+    delay: 15
+    until: pull.rc == 0
+    changed_when: false
+
+  # up -d пересоздаёт только изменившиеся контейнеры: без down нет лишнего простоя
+  - name: Start / update containers
+    command: docker compose up -d --remove-orphans
+    args:
+      chdir: "{{ dir_compose }}"
+    register: up
+    retries: 3                                # «port is already allocated» сразу после пересоздания
+    delay: 10
+    until: up.rc == 0
+    changed_when: "'Recreate' in up.stderr or 'Created' in up.stderr"
+
+  - name: Wait for Guacamole on this node
+    include_tasks: tasks/guacamole-healthcheck.yaml
+
+  # ------------------------------------------------------------------ очистка
+  # только неиспользуемые образы; тома, сети и остановленные контейнеры других сервисов не трогаем
+  - name: Remove unused images
+    command: docker image prune -a -f
+    changed_when: false

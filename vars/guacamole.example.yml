@@ -1,0 +1,38 @@
+# Скопируйте в vars/guacamole.yml и заполните. Зашифровать: ansible-vault encrypt vars/guacamole.yml
+
+# Версия образов guacamole/guacd и guacamole/guacamole: https://guacamole.apache.org/releases/
+# latest — каждый прогон ставит свежий релиз. Можно закрепить, например "1.6.0".
+# Перед выходом новой версии — бэкап базы и SQL из заметок к релизу (для 1.6.0: upgrade-pre-1.6.0.sql).
+guacamole_version: "latest"
+
+guacamole_public_url: https://rs.example.com/guacamole   # он же redirect URI клиента в Keycloak
+guacamole_context: guacamole                            # путь веб-приложения: https://сайт/<context>
+guacamole_port: 86                                      # порт на хосте для reverse proxy
+guacamole_tz: Europe/Moscow
+guacamole_log_level: info                               # debug — при разборе проблем
+dns_server: 10.0.0.1
+guacamole_subnet: 172.28.1.96/28
+
+# Каталоги на хосте
+guacamole_recordings_dir: /mnt/backups/guac_records     # записи сеансов (общее хранилище, права не меняются)
+guacamole_shared_dir: /docker-compose/guacamole/shared  # «диск» RDP: в подключении путь /home/guacd/shared
+
+# База MySQL / MariaDB
+guacamole_db_host: db.example.com
+guacamole_db_port: 3306
+guacamole_db_name: guacamole
+guacamole_db_user: guacamole
+guacamole_db_password: CHANGE_ME
+guacamole_db_ssl_mode: disabled                         # preferred / required, если сервер поддерживает TLS
+
+# Keycloak
+keycloak_url: https://sso.example.com
+keycloak_realm: myrealm
+keycloak_client_id: guacamole
+keycloak_scope: openid email profile roles
+keycloak_username_claim: email
+keycloak_groups_claim: roles
+
+# Firewall: порт Guacamole открыт только узлам, Docker-сетям и этим сетям (reverse proxy, мониторинг)
+firewall: true
+trusted_nets: [10.0.0.0/16]
